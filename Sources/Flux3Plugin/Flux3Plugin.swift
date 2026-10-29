@@ -314,7 +314,7 @@ public let flux3Plugin = GaeaPluginDefinition(
     version: "0.1.0",
     minGaea: "0.2.0",
     team: "CFZS6RXUCP",
-    repo: "https://github.com/xocialize/gaea-plugin-flux3-klein",
+    repo: "https://github.com/xocialize-code/gaea-plugin-flux3-klein",
     title: "FLUX 3 Klein",
     summary: "Black Forest Labs' FLUX 3 Image Klein (FLUX Kommunity licence: non-commercial; commercial outputs only for "
         + "Qualifying Users): a 5.55B flow-map DiT on Qwen3-VL-4B, 16 steps. Text-to-image and editing from up to 10 "

@@ -1,13 +1,13 @@
 # gaea-plugin-flux3-klein
 
 Black Forest Labs' **FLUX 3 Image Klein** (a 5.55B flow-map DiT with Qwen3-VL-4B conditioning, under the **FLUX
-Kommunity licence**) as a [Gaea](https://github.com/xocialize/gaea) research plugin. It is built on
-[GaeaPluginKit](https://github.com/xocialize/gaea-plugin-kit) over
+Kommunity licence**) as a [Gaea](https://github.com/xocialize-code/gaea) research plugin. It is built on
+[GaeaPluginKit](https://github.com/xocialize-code/gaea-plugin-kit) over
 [flux3-klein-swift](https://github.com/xocialize/flux3-klein-swift), runs in its own process, and speaks the Gaea
 Plugin Protocol v1. Add it to Gaea by its repo URL:
 
 ```bash
-gaea plugins add https://github.com/xocialize/gaea-plugin-flux3-klein
+gaea plugins add https://github.com/xocialize-code/gaea-plugin-flux3-klein
 ```
 
 > **Licence first.** The weights are not open: non-commercial use, and commercial use of *outputs* only for Qualifying
@@ -91,7 +91,7 @@ scripts/check-plugin.sh
 loads) against the weights in MLXEngine's store (`CHECK_MODELS_ROOT` moves it), with every `.build` folder hidden so
 MLX can find its metallib only inside the bundle. A control then shows that the bare worker, outside the bundle, can't.
 `scripts/release.sh` builds, checks, notarizes with the fleet's `mlx-notary` profile, and publishes the GitHub release.
-See the [demo plugin](https://github.com/xocialize/gaea-plugin-demo) for signing, notarization and CI secrets.
+See the [demo plugin](https://github.com/xocialize-code/gaea-plugin-demo) for signing, notarization and CI secrets.
 
 `flux3-inproc` (`swift run -c release flux3-inproc`; its header lists the options) is not part of the plugin. It runs
 the same lane in-process through MLXServeEngine, the reference that Gaea's runs are compared against byte for byte.

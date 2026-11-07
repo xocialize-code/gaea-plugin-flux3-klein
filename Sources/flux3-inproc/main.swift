@@ -68,10 +68,13 @@ if let width, let height {
 } else {
     asked = (1024, 1024)
 }
-let size = try snapped(asked)
-let request = Flux3Request(prompt: prompt, width: size.width, height: size.height, steps: steps, seed: seed, upsample: upsample)
+// An edit is upscaled only when a size is asked, as the worker plans it.
+let size = try plan(asked, upscale: !isEdit || (width != nil && height != nil))
+let request = Flux3Request(prompt: prompt, width: size.drawWidth, height: size.drawHeight, steps: steps, seed: seed,
+                           upsample: upsample, latentUpscale: size.passes)
 
 var result: [String: Any] = ["model": modelID, "lane": quant.rawValue, "width": size.width, "height": size.height,
+                             "draw": "\(size.drawWidth)x\(size.drawHeight)", "passes": size.passes,
                              "steps": steps, "seed": seed, "upsample": upsample ?? true, "references": imagePaths.count]
 
 // The budget Gaea sends a worker on a large Mac (wiresWeights off, the automatic pool cap).

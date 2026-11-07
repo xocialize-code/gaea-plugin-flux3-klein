@@ -17,9 +17,17 @@ import MLXToolKit
 // snapshot, with the package's footprints; bf16 is the default (the catalog's choice from 48 GB). BFL's safety checks
 // are off, as in the catalog. Weights come from the models root Gaea sends in configure; the engine materializes a
 // missing snapshot from the gated mirror (an HF token whose account accepted the licence).
+//
+// Past 2048² of area (0.2.0, AB-T-0464) the DiT draws a sixteenth of the area and FlowUpscaler (flux3-klein-swift
+// 0.7.0, `metaData["latentUpscale"] = 2`) doubles its latents twice before the row-band decode, up to 4096²: the picture
+// the smaller draw made, with finer detail (AB-R-0797). Up to 2048² it draws natively, as before. An edit is upscaled
+// only when it asks for a size; otherwise it is drawn at the first image's size fitted to 2048², as before.
 
-/// The package's envelope (`Flux3KleinEnvelope`): output area ≤ 2048², sides ≥ 64 in multiples of 16, up to 10 references.
-public let maxPixels = Flux3KleinEnvelope.maxOutputPixels
+/// The package's envelope (`Flux3KleinEnvelope`): a native draw ≤ 2048² of area, sides ≥ 64 in multiples of 16, up to
+/// 10 references; with a latent upscale the draw ≤ 1024² and the image ≤ 4096².
+public let nativePixels = Flux3KleinEnvelope.maxOutputPixels
+public let maxPixels = Flux3KleinEnvelope.maxUpscaledOutputPixels
+public let upscaleDrawPixels = Flux3KleinEnvelope.maxLatentUpscaleDrawPixels
 public let minSide = Flux3KleinEnvelope.minSide, grid = 16, maxReferences = Flux3KleinEnvelope.maxReferenceImages
 
 public let modelID = "flux-3-klein", modelTitle = "FLUX 3 Klein"
@@ -64,24 +72,40 @@ public func pixelSize(of url: URL) -> (Int, Int)? {
     return (width, height)
 }
 
-/// Fits a size to the envelope: scaled down to the area cap, keeping the aspect, then floored to multiples of 16. A
-/// change is reported as `size_snapped`. The package refuses rather than clamps, so the worker fits it first.
-public func snapped(_ size: (Int, Int)) throws -> (width: Int, height: Int, warning: Warning?) {
+/// How an image size is made: the draw, and the FlowUpscaler passes (0, or 2) that double it on each side.
+public struct SizePlan: Sendable {
+    public var width: Int, height: Int
+    public var drawWidth: Int, drawHeight: Int
+    public var passes: Int
+    public var warning: Warning?
+}
+
+/// Fits a size to the envelope and plans it: scaled down to 4096² of area (2048² when `upscale` is off), keeping the
+/// aspect; drawn as it is up to 2048²; past that drawn at a sixteenth of the area and upscaled twice. Each side is
+/// floored to a multiple of 16 (64 when upscaled). A change is reported as `size_snapped`. The package refuses rather
+/// than clamps, so the worker fits it first.
+public func plan(_ size: (Int, Int), upscale: Bool = true) throws -> SizePlan {
+    let cap = upscale ? maxPixels : nativePixels
     var (w, h) = (Double(size.0), Double(size.1))
-    if w * h > Double(maxPixels) {
-        let scale = (Double(maxPixels) / (w * h)).squareRoot()
+    if w * h > Double(cap) {
+        let scale = (Double(cap) / (w * h)).squareRoot()
         w *= scale
         h *= scale
     }
-    let width = Int(w) / grid * grid, height = Int(h) / grid * grid
-    guard min(width, height) >= minSide else {
-        throw GPPError(.invalidRequest, "FLUX 3 Klein draws at least \(minSide) px a side and at most 2048² in area; "
-            + "\(size.0)×\(size.1) doesn't fit.", detail: ["param": "size"])
+    let passes = w * h <= Double(nativePixels) ? 0 : 2
+    let unit = grid << passes
+    let width = Int(w) / unit * unit, height = Int(h) / unit * unit
+    let drawWidth = width >> passes, drawHeight = height >> passes
+    guard min(drawWidth, drawHeight) >= minSide, drawWidth * drawHeight <= (passes == 0 ? nativePixels : upscaleDrawPixels) else {
+        throw GPPError(.invalidRequest, "FLUX 3 Klein makes at least \(minSide) px a side and at most 4096² in area (past 2048² it "
+            + "draws a sixteenth of the area, at least \(minSide) px a side, and upscales it); \(size.0)×\(size.1) doesn't fit.",
+            detail: ["param": "size"])
     }
+    let note = passes == 0 ? "multiples of 16, at most \(upscale ? "4096" : "2048")² in area"
+        : "drawn at \(drawWidth)×\(drawHeight) and upscaled ×4, so multiples of 64, at most 4096² in area"
     let warning = (width, height) == size ? nil : Warning(
-        code: "size_snapped", message: "Drew \(width)×\(height) for \(size.0)×\(size.1): multiples of 16, at most 2048² in area.",
-        param: "size")
-    return (width, height, warning)
+        code: "size_snapped", message: "Made \(width)×\(height) for \(size.0)×\(size.1): \(note).", param: "size")
+    return SizePlan(width: width, height: height, drawWidth: drawWidth, drawHeight: drawHeight, passes: passes, warning: warning)
 }
 
 /// What one engine call carries, built the same way by the worker and flux3-inproc so the two send byte-identical
@@ -96,9 +120,11 @@ public struct Flux3Request: Sendable {
     public var upsample: Bool?
     /// `Flux3KleinMetaKeys.boxes`: layout boxes or box edits, passed through as the catalog's request key does.
     public var boxes: MetaValue?
+    /// FlowUpscaler passes after the draw (`metaData["latentUpscale"]`); 0 draws at `width` × `height` as it is.
+    public var latentUpscale: Int
 
     public init(prompt: String, width: Int, height: Int, steps: Int = defaultSteps, seed: UInt64, upsample: Bool? = nil,
-                boxes: MetaValue? = nil) {
+                boxes: MetaValue? = nil, latentUpscale: Int = 0) {
         self.prompt = prompt
         self.width = width
         self.height = height
@@ -106,6 +132,7 @@ public struct Flux3Request: Sendable {
         self.seed = seed
         self.upsample = upsample
         self.boxes = boxes
+        self.latentUpscale = latentUpscale
     }
 
     /// The package's per-request keys, only those the request sets.
@@ -113,6 +140,7 @@ public struct Flux3Request: Sendable {
         var meta: MetaData = [:]
         if let upsample { meta[Flux3KleinMetaKeys.upsample] = .bool(upsample) }
         if let boxes { meta[Flux3KleinMetaKeys.boxes] = boxes }
+        if latentUpscale > 0 { meta["latentUpscale"] = .int(latentUpscale) }
         return meta
     }
 
@@ -180,16 +208,20 @@ struct Shared {
         seed = job.seed ?? UInt64.random(in: 0..<(1 << 31))
     }
 
-    func request(prompt: String, width: Int, height: Int) -> Flux3Request {
-        Flux3Request(prompt: prompt, width: width, height: height, steps: steps, seed: seed, upsample: upsample,
-                     boxes: boxes.map(metaValue))
+    func request(prompt: String, _ size: SizePlan) -> Flux3Request {
+        Flux3Request(prompt: prompt, width: size.drawWidth, height: size.drawHeight, steps: steps, seed: seed, upsample: upsample,
+                     boxes: boxes.map(metaValue), latentUpscale: size.passes)
     }
 
-    func effective(width: Int, height: Int, counted: Bool = true) -> [String: JSONValue] {
+    func effective(_ size: SizePlan, counted: Bool = true) -> [String: JSONValue] {
         var values: [String: JSONValue] = [
-            "size": ["width": .int(Int64(width)), "height": .int(Int64(height))],
+            "size": ["width": .int(Int64(size.width)), "height": .int(Int64(size.height))],
             "seed": .int(Int64(seed)), "x-flux3.steps": .int(Int64(steps)), "x-flux3.upsample": .bool(upsample ?? true),
         ]
+        if size.passes > 0 {
+            values["x-flux3.upscaled"] = ["from": ["width": .int(Int64(size.drawWidth)), "height": .int(Int64(size.drawHeight))],
+                                          "passes": .int(Int64(size.passes)), "model": "FlowUpscaler"]
+        }
         if counted { values["count"] = .int(Int64(count)) }
         if let boxes { values["x-flux3.boxes"] = boxes }
         return values
@@ -202,11 +234,11 @@ func generate() -> EngineOperation {
         guard let prompt = try job.text("prompt"), !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw GPPError(.invalidRequest, "image.generate needs a prompt.")
         }
-        let size = try snapped(try requestedSize(job, fallback: (1024, 1024)))
+        let size = try plan(try requestedSize(job, fallback: (1024, 1024)))
         var shared = try Shared(job)
         if let warning = size.warning { shared.warnings.insert(warning, at: 0) }
-        let request = shared.request(prompt: prompt, width: size.width, height: size.height)
-        let effective = shared.effective(width: size.width, height: size.height)
+        let request = shared.request(prompt: prompt, size)
+        let effective = shared.effective(size)
         return (0..<shared.count).map { i in
             EngineCall(request.generate(index: i), effective: effective, warnings: shared.warnings)
         }
@@ -230,7 +262,9 @@ func edit() -> EngineOperation {
         guard let inputSize = pixelSize(of: references[0]) else {
             throw GPPError(.invalidRequest, "image.edit needs readable PNG or JPEG images.")
         }
-        let size = try snapped(try requestedSize(job, fallback: inputSize))
+        // Upscaled only when a size is asked: an edit sized by its first image keeps the native 2048² cap, as before.
+        let asked = job.param("size") != nil || job.param("aspect") != nil
+        let size = try plan(try requestedSize(job, fallback: inputSize), upscale: asked)
         var shared = try Shared(job, counted: false)
         if let warning = size.warning { shared.warnings.insert(warning, at: 0) }
         if job.param("strength") != nil {
@@ -239,8 +273,8 @@ func edit() -> EngineOperation {
                                            param: "strength"))
         }
         let images = try references.indices.map { try job.image(name, index: $0) }
-        let request = shared.request(prompt: instruction, width: size.width, height: size.height)
-        return [EngineCall(request.edit(images), effective: shared.effective(width: size.width, height: size.height, counted: false),
+        let request = shared.request(prompt: instruction, size)
+        return [EngineCall(request.edit(images), effective: shared.effective(size, counted: false),
                            warnings: shared.warnings)]
     }
 }
@@ -298,7 +332,9 @@ func offerModel(edit: Bool) -> JSONValue {
     let use = edit
         ? "Editing and composition from 1–10 images, named in the instruction in order (\"the second image\"); describe the "
             + "whole result with the edit folded in. Drawn from noise at the first image's size; strength does nothing. "
+            + "A size past 2048² is drawn at a sixteenth of the area and upscaled (FlowUpscaler), up to 4096². "
         : "Text-to-image, 16 steps without CFG: negative prompts do nothing. Strong English text and box layout. "
+            + "Past 2048² it draws a sixteenth of the area and upscales it (FlowUpscaler), up to 4096²: the same picture, finer. "
     return [
         "id": .string(modelID), "title": .string(modelTitle), "license": kommunity,
         "memory_class": "large", "speed_class": "slow",
@@ -311,8 +347,8 @@ func offerModel(edit: Bool) -> JSONValue {
 
 public let flux3Plugin = GaeaPluginDefinition(
     id: "com.xocialize.gaea.flux3-klein",
-    version: "0.1.1",
-    minGaea: "0.2.0",
+    version: "0.2.0",
+    minGaea: "1.2.0",
     team: "CFZS6RXUCP",
     repo: "https://github.com/xocialize-code/gaea-plugin-flux3-klein",
     title: "FLUX 3 Klein",

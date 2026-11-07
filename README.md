@@ -27,10 +27,20 @@ Both offers are named-only and opt-in: the normalizer never picks FLUX 3 Klein b
 - **Prompts.** The model wants a full scene caption: medium and style, the scene, lighting and camera, and every
   subject with its colours, materials and place in the frame. Short requests are fine, since BFL's prompt upsampler
   expands each one first (about 10 s). Put text to render in quotes, e.g. a sign reading "OPEN".
-- **Sizes.** Sides of at least 64 px in multiples of 16, at most 2048² in area (the area the package's footprints were
-  measured at). Anything else is fitted, keeping the aspect, and reported `size_snapped`. `aspect` with `megapixels`
-  works too. The default is 1024². On `image.edit` the package fits one reference under 2048² and several each under
-  1 MP itself.
+- **Sizes (0.2.0).** Sides of at least 64 px, at most 4096² in area. Up to 2048² the model draws natively, in
+  multiples of 16, as before.
+  - **Past 2048²,** it draws a sixteenth of the area (at most 1024²), then
+    [FlowUpscaler](https://huggingface.co/mlx-community/FlowUpscaler-bf16) (TensorForger, Unlicense) doubles the
+    latents twice before the decode. The result is the picture the smaller draw made, with finer detail, and effective
+    reports it as `x-flux3.upscaled` ({from, passes}).
+  - **Grid:** sides are then multiples of 64.
+  - **Edits:** an `image.edit` is upscaled only when it asks for a size. Sized by its first image, it keeps the native
+    2048² cap.
+  - Anything else is fitted, keeping the aspect, and reported `size_snapped`. `aspect` with `megapixels` works too.
+    The default is 1024².
+  - **References:** on `image.edit` the package fits one reference under 2048² and several each under 1 MP itself.
+  - **Memory:** the package declares how its memory grows with output pixels, and Gaea 1.2.0 charges each job on that
+    line (4096² is about 40.5 GB with bf16).
 - **`count`** on `image.generate`: 1–8 images, each with `seed + i`. A request without a seed gets one, reported in
   `effective`. `image.edit` has one output. The package keeps a seed's low 32 bits.
 - **Options**, as MES extensions:
@@ -90,12 +100,15 @@ scripts/check-plugin.sh
 `check-plugin.sh` generates one 512² image with the int4 lane and `x-flux3.upsample: false` (the upsampler never
 loads) against the weights in MLXEngine's store (`CHECK_MODELS_ROOT` moves it), with every `.build` folder hidden so
 MLX can find its metallib only inside the bundle. A control then shows that the bare worker, outside the bundle, can't.
+`scripts/golden.sh <out-dir>` runs seeded jobs over GPP against `flux3-inproc`, byte for byte, with the upsampler
+off: 1024² and 2048² drawn natively, 4096² and 3072×2048 drawn at a sixteenth and upscaled ×4, and an edit asked at
+4096². Each is the asked size, with the upscale reported or absent.
 `scripts/release.sh` builds, checks, notarizes with the fleet's `mlx-notary` profile, and publishes the GitHub release.
 See the [demo plugin](https://github.com/xocialize-code/gaea-plugin-demo) for signing, notarization and CI secrets.
 
 `flux3-inproc` (`swift run -c release flux3-inproc`; its header lists the options) is not part of the plugin. It runs
 the same lane in-process through MLXServeEngine, the reference that Gaea's runs are compared against byte for byte.
-It builds its request with the same library functions as the worker: `--width`/`--height` are snapped the same way,
+It builds its request with the same library functions as the worker: `--width`/`--height` are planned the same way (with the upscale),
 and `--no-upsample` is `x-flux3.upsample: false`.
 
 ## Licence
